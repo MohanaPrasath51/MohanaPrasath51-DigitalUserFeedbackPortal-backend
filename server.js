@@ -43,39 +43,50 @@ if (useCluster && cluster.isMaster) {
     let firebaseCredential;
     const serviceAccountPath = path.join(__dirname, 'serviceAccountKey.json');
 
+    function normalizePrivateKey(rawKey) {
+      if (!rawKey) return rawKey;
+      
+      // 1. Remove literal quotes (single or double) if the entire string is wrapped
+      let normalized = rawKey.trim();
+      if ((normalized.startsWith('"') && normalized.endsWith('"')) ||
+          (normalized.startsWith("'") && normalized.endsWith("'"))) {
+        normalized = normalized.slice(1, -1);
+      }
+
+      // 2. Resolve newline escapes (\n or \\n)
+      normalized = normalized.replace(/\\n/g, '\n').replace(/\\\\n/g, '\n');
+
+      // 3. Ensure the header/footer have correct newlines
+      if (!normalized.includes('\n') && normalized.includes('-----BEGIN PRIVATE KEY-----')) {
+          normalized = normalized
+              .replace('-----BEGIN PRIVATE KEY-----', '-----BEGIN PRIVATE KEY-----\n')
+              .replace('-----END PRIVATE KEY-----', '\n-----END PRIVATE KEY-----');
+      }
+
+      return normalized.trim();
+    }
+
     if (fs.existsSync(serviceAccountPath)) {
       console.log(`${logPrefix}Loading Firebase from serviceAccountKey.json`);
-      firebaseCredential = admin.credential.cert(serviceAccountPath);
+      try {
+        const serviceAccount = JSON.parse(fs.readFileSync(serviceAccountPath, 'utf8'));
+        // Apply normalization to the key inside the JSON file too
+        serviceAccount.password = normalizePrivateKey(serviceAccount.private_key); // Use normalized key
+        
+        firebaseCredential = admin.credential.cert({
+            projectId: serviceAccount.project_id,
+            clientEmail: serviceAccount.client_email,
+            privateKey: normalizePrivateKey(serviceAccount.private_key),
+        });
+      } catch (err) {
+        console.error(`${logPrefix}Error parsing serviceAccountKey.json:`, err.message);
+        throw err;
+      }
     } else {
       console.log(`${logPrefix}Loading Firebase from Environment Variables`);
       const firebaseProjectId = process.env.FIREBASE_PROJECT_ID;
       const firebaseClientEmail = process.env.FIREBASE_CLIENT_EMAIL;
       const rawFirebasePrivateKey = process.env.FIREBASE_PRIVATE_KEY;
-
-      function normalizePrivateKey(rawKey) {
-        if (!rawKey) return rawKey;
-        
-        // 1. Remove literal quotes (single or double) if the entire string is wrapped
-        let normalized = rawKey.trim();
-        if ((normalized.startsWith('"') && normalized.endsWith('"')) ||
-            (normalized.startsWith("'") && normalized.endsWith("'"))) {
-          normalized = normalized.slice(1, -1);
-        }
-
-        // 2. Resolve newline escapes (\n or \\n)
-        // Some platforms double-escape or use literals
-        normalized = normalized.replace(/\\n/g, '\n').replace(/\\\\n/g, '\n');
-
-        // 3. Final cleanup: Ensure the header/footer have correct newlines if they were somehow smashed
-        if (!normalized.includes('\n') && normalized.includes('-----BEGIN PRIVATE KEY-----')) {
-            // If it's all one line, try to fix the common smashed format
-            normalized = normalized
-                .replace('-----BEGIN PRIVATE KEY-----', '-----BEGIN PRIVATE KEY-----\n')
-                .replace('-----END PRIVATE KEY-----', '\n-----END PRIVATE KEY-----');
-        }
-
-        return normalized.trim();
-      }
 
       const firebasePrivateKey = normalizePrivateKey(rawFirebasePrivateKey);
 
