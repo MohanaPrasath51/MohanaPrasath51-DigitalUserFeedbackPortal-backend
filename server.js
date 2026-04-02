@@ -48,7 +48,7 @@ if (useCluster && cluster.isMaster) {
       if (!rawKey) return rawKey;
       let normalized = rawKey.trim();
       if ((normalized.startsWith('"') && normalized.endsWith('"')) ||
-          (normalized.startsWith("'") && normalized.endsWith("'"))) {
+        (normalized.startsWith("'") && normalized.endsWith("'"))) {
         normalized = normalized.slice(1, -1);
       }
       // Replaces literal \n or \\n characters with real newlines
@@ -59,7 +59,13 @@ if (useCluster && cluster.isMaster) {
     if (process.env.FIREBASE_SERVICE_ACCOUNT_BASE64) {
       console.log(`${logPrefix}Loading Firebase from FIREBASE_SERVICE_ACCOUNT_BASE64`);
       try {
-        const decoded = Buffer.from(process.env.FIREBASE_SERVICE_ACCOUNT_BASE64, 'base64').toString('utf8');
+        let base64Str = process.env.FIREBASE_SERVICE_ACCOUNT_BASE64.trim();
+        // Strip accidental quotes if present
+        if ((base64Str.startsWith('"') && base64Str.endsWith('"')) ||
+          (base64Str.startsWith("'") && base64Str.endsWith("'"))) {
+          base64Str = base64Str.slice(1, -1);
+        }
+        const decoded = Buffer.from(base64Str, 'base64').toString('utf8');
         const serviceAccount = JSON.parse(decoded);
         serviceAccount.private_key = normalizePrivateKey(serviceAccount.private_key);
         firebaseCredential = admin.credential.cert(serviceAccount);
@@ -67,7 +73,7 @@ if (useCluster && cluster.isMaster) {
         console.error(`${logPrefix}Error decoding FIREBASE_SERVICE_ACCOUNT_BASE64:`, err.message);
         throw err;
       }
-    } 
+    }
     // PRIORITY 2: Local JSON File
     else if (fs.existsSync(serviceAccountPath)) {
       console.log(`${logPrefix}Loading Firebase from serviceAccountKey.json`);
@@ -82,7 +88,7 @@ if (useCluster && cluster.isMaster) {
         console.error(`${logPrefix}Error parsing serviceAccountKey.json:`, err.message);
         throw err;
       }
-    } 
+    }
     // PRIORITY 3: Individual Environment Variables
     else {
       console.log(`${logPrefix}Loading Firebase from Individual Environment Variables`);
@@ -134,15 +140,29 @@ if (useCluster && cluster.isMaster) {
     // 4. Initialize Express App & Socket.io
     const app = express();
     const server = http.createServer(app);
-    const io = new Server(server, { cors: corsOptions });
+    
+    // SECURITY & PERFORMANCE MIDDLEWARE
+    const helmet = require('helmet');
+    const compression = require('compression');
+    
+    app.use(helmet({
+      contentSecurityPolicy: false, // Disable for APIs normally to allow easier client connection
+      crossOriginResourcePolicy: { policy: "cross-origin" }
+    }));
+    app.use(compression()); // Compress all responses for better performance
+    
+    const io = new Server(server, { 
+      cors: corsOptions,
+      pingTimeout: 60000, // Handle slower production networks
+    });
 
     app.set('io', io);
 
     io.on('connection', (socket) => {
+      // socket logic remains same...
       socket.on('join_feedback', (feedbackId) => socket.join(feedbackId));
       socket.on('leave_feedback', (feedbackId) => socket.leave(feedbackId));
 
-      // Typing Indicators logic
       socket.on('typing', ({ feedbackId, userName, role }) => {
         socket.to(feedbackId).emit('user_typing', { userId: socket.id, userName, role });
       });
@@ -163,7 +183,12 @@ if (useCluster && cluster.isMaster) {
 
     // 6. Health check & Error Handlers
     app.get('/', (req, res) => {
-      res.json({ message: 'Feedback Portal API is running', worker: cluster.worker?.id });
+      res.json({ 
+        status: 'UP',
+        message: 'Feedback Portal API is healthy', 
+        worker: cluster.worker?.id,
+        timestamp: new Date()
+      });
     });
 
     app.use((req, res, next) => {
@@ -189,6 +214,25 @@ if (useCluster && cluster.isMaster) {
 
     server.listen(PORT, () => {
       console.log(`${logPrefix}Server running on port ${PORT}`);
+    });
+
+    // Graceful Shutdown Logic (For Production)
+    process.on('SIGTERM', () => {
+      console.info(`${logPrefix}SIGTERM received. Shutting down gracefully...`);
+      server.close(() => {
+        console.log(`${logPrefix}Process terminated.`);
+        require('mongoose').connection.close();
+        process.exit(0);
+      });
+    });
+
+    process.on('SIGINT', () => {
+      console.info(`${logPrefix}SIGINT received. Shutting down gracefully...`);
+      server.close(() => {
+        console.log(`${logPrefix}Process terminated.`);
+        require('mongoose').connection.close();
+        process.exit(0);
+      });
     });
   };
 
