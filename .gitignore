@@ -1,0 +1,32 @@
+# Node modules
+node_modules/
+**/node_modules/
+
+# Build outputs
+dist/
+**/dist/
+.vite/
+**/.vite/
+
+# Environment variables (SENSITIVE)
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+**/.env
+**/.env.*
+
+# Firebase service accounts (SENSITIVE)
+serviceAccountKey.json
+**/serviceAccountKey.json
+
+# Debug / Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+debug_output.txt
+
+# OS files
+.DS_Store
+Thumbs.db
