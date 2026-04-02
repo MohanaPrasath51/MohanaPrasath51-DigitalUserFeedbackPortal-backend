@@ -39,51 +39,53 @@ if (useCluster && cluster.isMaster) {
   const logPrefix = cluster.isWorker ? `[Worker ${cluster.worker.id}] ` : '';
 
   const initializeApp = async () => {
-    // 1. Load Firebase Credentials
+    // 1. Loading Firebase Credentials
     let firebaseCredential;
     const serviceAccountPath = path.join(__dirname, 'serviceAccountKey.json');
 
+    // Robust normalization for Private Keys (Fixes Render/Vercel PEM errors)
     function normalizePrivateKey(rawKey) {
       if (!rawKey) return rawKey;
-      
-      // 1. Remove literal quotes (single or double) if the entire string is wrapped
       let normalized = rawKey.trim();
       if ((normalized.startsWith('"') && normalized.endsWith('"')) ||
           (normalized.startsWith("'") && normalized.endsWith("'"))) {
         normalized = normalized.slice(1, -1);
       }
-
-      // 2. Resolve newline escapes (\n or \\n)
-      normalized = normalized.replace(/\\n/g, '\n').replace(/\\\\n/g, '\n');
-
-      // 3. Ensure the header/footer have correct newlines
-      if (!normalized.includes('\n') && normalized.includes('-----BEGIN PRIVATE KEY-----')) {
-          normalized = normalized
-              .replace('-----BEGIN PRIVATE KEY-----', '-----BEGIN PRIVATE KEY-----\n')
-              .replace('-----END PRIVATE KEY-----', '\n-----END PRIVATE KEY-----');
-      }
-
-      return normalized.trim();
+      // Replaces literal \n or \\n characters with real newlines
+      return normalized.replace(/\\n/g, '\n').replace(/\\\\n/g, '\n').trim();
     }
 
-    if (fs.existsSync(serviceAccountPath)) {
+    // PRIORITY 1: Base64 Encoded Service Account (Single String - Best for Production)
+    if (process.env.FIREBASE_SERVICE_ACCOUNT_BASE64) {
+      console.log(`${logPrefix}Loading Firebase from FIREBASE_SERVICE_ACCOUNT_BASE64`);
+      try {
+        const decoded = Buffer.from(process.env.FIREBASE_SERVICE_ACCOUNT_BASE64, 'base64').toString('utf8');
+        const serviceAccount = JSON.parse(decoded);
+        serviceAccount.private_key = normalizePrivateKey(serviceAccount.private_key);
+        firebaseCredential = admin.credential.cert(serviceAccount);
+      } catch (err) {
+        console.error(`${logPrefix}Error decoding FIREBASE_SERVICE_ACCOUNT_BASE64:`, err.message);
+        throw err;
+      }
+    } 
+    // PRIORITY 2: Local JSON File
+    else if (fs.existsSync(serviceAccountPath)) {
       console.log(`${logPrefix}Loading Firebase from serviceAccountKey.json`);
       try {
         const serviceAccount = JSON.parse(fs.readFileSync(serviceAccountPath, 'utf8'));
-        // Apply normalization to the key inside the JSON file too
-        serviceAccount.password = normalizePrivateKey(serviceAccount.private_key); // Use normalized key
-        
         firebaseCredential = admin.credential.cert({
-            projectId: serviceAccount.project_id,
-            clientEmail: serviceAccount.client_email,
-            privateKey: normalizePrivateKey(serviceAccount.private_key),
+          projectId: serviceAccount.project_id,
+          clientEmail: serviceAccount.client_email,
+          privateKey: normalizePrivateKey(serviceAccount.private_key),
         });
       } catch (err) {
         console.error(`${logPrefix}Error parsing serviceAccountKey.json:`, err.message);
         throw err;
       }
-    } else {
-      console.log(`${logPrefix}Loading Firebase from Environment Variables`);
+    } 
+    // PRIORITY 3: Individual Environment Variables
+    else {
+      console.log(`${logPrefix}Loading Firebase from Individual Environment Variables`);
       const firebaseProjectId = process.env.FIREBASE_PROJECT_ID;
       const firebaseClientEmail = process.env.FIREBASE_CLIENT_EMAIL;
       const rawFirebasePrivateKey = process.env.FIREBASE_PRIVATE_KEY;
@@ -91,7 +93,7 @@ if (useCluster && cluster.isMaster) {
       const firebasePrivateKey = normalizePrivateKey(rawFirebasePrivateKey);
 
       if (!firebaseProjectId || !firebaseClientEmail || !firebasePrivateKey) {
-        throw new Error('Missing Firebase Admin credentials. Set FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL and FIREBASE_PRIVATE_KEY in backend/.env.');
+        throw new Error('Missing Firebase Admin identity. Set FIREBASE_SERVICE_ACCOUNT_BASE64 or provide individual variables.');
       }
 
       firebaseCredential = admin.credential.cert({
