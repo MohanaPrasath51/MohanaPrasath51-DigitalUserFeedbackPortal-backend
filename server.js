@@ -47,12 +47,30 @@ if (useCluster && cluster.isMaster) {
     function normalizePrivateKey(rawKey) {
       if (!rawKey) return rawKey;
       let normalized = rawKey.trim();
+      
+      // Strip accidental wrapping quotes
       if ((normalized.startsWith('"') && normalized.endsWith('"')) ||
         (normalized.startsWith("'") && normalized.endsWith("'"))) {
         normalized = normalized.slice(1, -1);
       }
-      // Replaces literal \n or \\n characters with real newlines
-      return normalized.replace(/\\n/g, '\n').replace(/\\\\n/g, '\n').trim();
+      
+      const header = '-----BEGIN PRIVATE KEY-----';
+      const footer = '-----END PRIVATE KEY-----';
+      
+      if (normalized.includes(header) && normalized.includes(footer)) {
+        // Extract the part between header and footer
+        const parts = normalized.split(header);
+        const subParts = parts[1].split(footer);
+        // Aggressively strip everything except valid base64 characters
+        const body = subParts[0].replace(/[^a-zA-Z0-9+/=]/g, '');
+        
+        // Wrap body at 64 characters (standard PEM format)
+        const wrappedBody = body.match(/.{1,64}/g).join('\n');
+        return `${header}\n${wrappedBody}\n${footer}\n`;
+      }
+      
+      // Fallback: Replace escaped newlines with real ones
+      return normalized.replace(/\\+n/g, '\n').trim();
     }
 
     // PRIORITY 1: Base64 Encoded Service Account (Single String - Best for Production)

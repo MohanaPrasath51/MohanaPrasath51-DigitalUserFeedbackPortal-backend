@@ -58,18 +58,7 @@ const feedbackSchema = new mongoose.Schema({
     ref: 'Admin',
     default: null,
   },
-  chatAccessRequests: [
-    {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'Admin',
-    }
-  ],
-  permittedTeamMembers: [
-    {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'Admin',
-    }
-  ],
+
   messages: [
     {
       senderId: {

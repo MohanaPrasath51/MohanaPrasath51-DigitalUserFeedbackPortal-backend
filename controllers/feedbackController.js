@@ -125,7 +125,6 @@ const getAllFeedback = asyncHandler(async (req, res) => {
       .sort({ createdAt: -1 });
   } else if (req.user.role === 'team') {
     feedbackList = await Feedback.find({
-      department: req.user.department,
       isDuplicate: { $ne: true }
     })
       .populate('submittedBy', 'name email username')
@@ -154,7 +153,7 @@ const getFeedbackById = asyncHandler(async (req, res) => {
 
   const isOwner = feedback.submittedBy._id.toString() === req.user._id.toString();
   const isAdmin = req.user.role === 'admin';
-  const isTeam = req.user.role === 'team' && feedback.department === req.user.department;
+  const isTeam = req.user.role === 'team';
 
   if (!isAdmin && !isTeam && !isOwner) {
     return res.status(403).json({ message: 'Structural access denied.' });
@@ -179,18 +178,18 @@ const updateFeedback = asyncHandler(async (req, res) => {
   }
 
   const isAdmin = req.user.role === 'admin' && req.user.isAdminCollection;
-  const isTeam = req.user.role === 'team' && feedback.department === req.user.department;
+  const isTeam = req.user.role === 'team';
   const isOwner = feedback.submittedBy.toString() === req.user._id.toString();
 
   if (!isAdmin && !isTeam && !isOwner) {
     return res.status(403).json({ message: 'Privilege escalation detected. Access denied.' });
   }
 
-  // ONLY MAIN ADMIN (authenticated in Admin collection) can provide official responses or change status
-  const canModifyCoreFields = isAdmin;
+  // Main Admin and Team can provide official responses or change status
+  const canModifyCoreFields = isAdmin || isTeam;
 
   if (!canModifyCoreFields && (status || adminResponse !== undefined || priority || department)) {
-    return res.status(403).json({ message: 'Restricted: Only Main Admin can resolve or modify official responses.' });
+    return res.status(403).json({ message: 'Restricted: Only Admin or Team can resolve or modify official responses.' });
   }
 
   // Field updates with permission checks
@@ -229,7 +228,7 @@ const updateFeedback = asyncHandler(async (req, res) => {
     if (adminResponse && adminResponse.trim()) {
       feedback.messages.push({
         senderId: req.user._id,
-        senderType: req.user.role === 'team' ? 'Team' : 'Admin',
+        senderType: 'Admin',
         content: adminResponse.trim(),
         createdAt: Date.now()
       });
@@ -282,7 +281,7 @@ const updateFeedback = asyncHandler(async (req, res) => {
         if (adminResponse && adminResponse.trim()) {
           dup.messages.push({
             senderId: req.user._id,
-            senderType: req.user.role === 'team' ? 'Team' : 'Admin',
+            senderType: 'Admin',
             content: adminResponse.trim(),
             createdAt: Date.now()
           });
@@ -348,8 +347,7 @@ const deleteFeedback = asyncHandler(async (req, res) => {
 });
 
 const getFeedbackStats = asyncHandler(async (req, res) => {
-  const isSuperAdmin = req.user.role === 'admin';
-  const filter = isSuperAdmin ? { isDuplicate: { $ne: true } } : { department: req.user.department, isDuplicate: { $ne: true } };
+  const filter = { isDuplicate: { $ne: true } };
 
   const total = await Feedback.countDocuments(filter);
   const pending = await Feedback.countDocuments({ ...filter, status: 'pending' });
@@ -377,10 +375,9 @@ const addMessage = asyncHandler(async (req, res) => {
   const isTeamMember = req.user.role === 'team' && req.user.isAdminCollection;
   const isOwner = feedback.submittedBy.toString() === req.user._id.toString();
 
-  // New Rule: Team members can chat ONLY if permitted by Main Admin for this specific feedback
-  const isPermittedTeam = isTeamMember && feedback.permittedTeamMembers?.some(id => id.toString() === req.user._id.toString());
+  const isTeam = isTeamMember;
 
-  if (!isAdminUser && !isOwner && !isPermittedTeam) {
+  if (!isAdminUser && !isOwner && !isTeam) {
     const msg = isTeamMember ? 'Secure: You lack valid chat authorization for this case.' : 'Only report owner or platform admin can participate in this chat.';
     return res.status(403).json({ message: msg });
   }
@@ -391,7 +388,7 @@ const addMessage = asyncHandler(async (req, res) => {
 
   const newMessage = {
     senderId: req.user._id,
-    senderType: isAdminUser ? 'Admin' : (isTeamMember ? 'Team' : 'User'),
+    senderType: (isAdminUser || isTeamMember) ? 'Admin' : 'User',
     content: content.trim(),
     createdAt: Date.now()
   };
@@ -410,7 +407,7 @@ const addMessage = asyncHandler(async (req, res) => {
       feedbackId: feedback._id
     });
     if (feedback.status === 'pending') feedback.status = 'in-review';
-  } else if (isPermittedTeam) {
+  } else if (isTeam) {
     if (feedback.resolvedBy) {
       await Notification.create({
         recipient: feedback.resolvedBy,
@@ -475,69 +472,9 @@ const addMessage = asyncHandler(async (req, res) => {
   res.status(201).json(savedMsg);
 });
 
-// POST /api/feedback/:id/request-chat
-const requestChatAccess = asyncHandler(async (req, res) => {
-  const feedback = await Feedback.findById(req.params.id);
-  if (!feedback) return res.status(404).json({ message: 'Feedback not found.' });
-
-  if (req.user.role !== 'team') {
-    return res.status(403).json({ message: 'Authorization error: Only Team agents can request chat keys.' });
-  }
-
-  if (feedback.chatAccessRequests.includes(req.user._id)) {
-    return res.status(400).json({ message: 'Key Request Protocol: Already in queue.' });
-  }
-
-  feedback.chatAccessRequests.push(req.user._id);
-  await feedback.save();
-
-  // Notify ALL Main Admins about the request
-  const admins = await Admin.find({ role: 'admin' });
-  for (const adm of admins) {
-    await Notification.create({
-      recipient: adm._id,
-      onModel: 'Admin',
-      type: 'system',
-      title: 'Chat Access Requested',
-      message: `${req.user.name} (${feedback.department}) is requesting chat permission for case #${feedback._id.toString().substring(19)}.`,
-      feedbackId: feedback._id
-    });
-  }
-
-  res.json({ message: 'Chat key requested: Awaiting admin authorization.' });
-});
-
-// POST /api/feedback/:id/grant-chat
-const grantChatAccess = asyncHandler(async (req, res) => {
-  const { userId } = req.body;
-  const feedback = await Feedback.findById(req.params.id);
-  if (!feedback) return res.status(404).json({ message: 'Feedback not found.' });
-
-  // Ensure we are Main Admin (handled by adminOnly middleware in routes)
-  if (!feedback.permittedTeamMembers.includes(userId)) {
-    feedback.permittedTeamMembers.push(userId);
-  }
-
-  // Remove from requests list
-  feedback.chatAccessRequests = feedback.chatAccessRequests.filter(id => id.toString() !== userId.toString());
-  await feedback.save();
-
-  // Notify the Team Member
-  await Notification.create({
-    recipient: userId,
-    onModel: 'Admin',
-    type: 'system',
-    title: 'Vault Key Issued',
-    message: `Admin granted you chat access for feedback: "${feedback.title}".`,
-    feedbackId: feedback._id
-  });
-
-  res.json({ message: 'Authorization granted: Vault key issued to team member.' });
-});
 
 const getFeedbackAnalytics = asyncHandler(async (req, res) => {
-  const isSuperAdmin = req.user.role === 'admin';
-  const filter = isSuperAdmin ? { isDuplicate: { $ne: true } } : { department: req.user.department, isDuplicate: { $ne: true } };
+  const filter = { isDuplicate: { $ne: true } };
 
   // 1. Department-wise stats (Bar Chart)
   const departmentStats = await Feedback.aggregate([
@@ -637,7 +574,5 @@ module.exports = {
   deleteFeedback,
   getFeedbackStats,
   addMessage,
-  requestChatAccess,
-  grantChatAccess,
   getFeedbackAnalytics,
 };
