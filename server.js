@@ -46,7 +46,7 @@ if (useCluster && cluster.isMaster) {
     // Robust normalization for Private Keys (Fixes Render/Vercel PEM errors)
     function normalizePrivateKey(rawKey) {
       if (!rawKey) return rawKey;
-      let normalized = rawKey.trim();
+      let normalized = String(rawKey).trim();
       
       // Strip accidental wrapping quotes
       if ((normalized.startsWith('"') && normalized.endsWith('"')) ||
@@ -54,23 +54,11 @@ if (useCluster && cluster.isMaster) {
         normalized = normalized.slice(1, -1);
       }
       
-      const header = '-----BEGIN PRIVATE KEY-----';
-      const footer = '-----END PRIVATE KEY-----';
-      
-      if (normalized.includes(header) && normalized.includes(footer)) {
-        // Extract the part between header and footer
-        const parts = normalized.split(header);
-        const subParts = parts[1].split(footer);
-        // Aggressively strip everything except valid base64 characters
-        const body = subParts[0].replace(/[^a-zA-Z0-9+/=]/g, '');
-        
-        // Wrap body at 64 characters (standard PEM format)
-        const wrappedBody = body.match(/.{1,64}/g).join('\n');
-        return `${header}\n${wrappedBody}\n${footer}\n`;
-      }
-      
-      // Fallback: Replace escaped newlines with real ones
-      return normalized.replace(/\\+n/g, '\n').trim();
+      // Firebase keys often get literal "\n" strings instead of actual newlines.
+      // Remove any trailing or extra formatting escaping safely without corrupting the key payload.
+      normalized = normalized.replace(/\\n/g, '\n');
+      normalized = normalized.replace(/\\/g, '');
+      return normalized;
     }
 
     // PRIORITY 1: Base64 Encoded Service Account (Single String - Best for Production)
