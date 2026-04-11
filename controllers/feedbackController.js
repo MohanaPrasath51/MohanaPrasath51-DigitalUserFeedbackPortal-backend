@@ -125,7 +125,8 @@ const getAllFeedback = asyncHandler(async (req, res) => {
       .sort({ createdAt: -1 });
   } else if (req.user.role === 'team') {
     feedbackList = await Feedback.find({
-      isDuplicate: { $ne: true }
+      isDuplicate: { $ne: true },
+      department: req.user.department
     })
       .populate('submittedBy', 'name email username')
       .populate('resolvedBy', 'name email department role')
@@ -349,6 +350,10 @@ const deleteFeedback = asyncHandler(async (req, res) => {
 const getFeedbackStats = asyncHandler(async (req, res) => {
   const filter = { isDuplicate: { $ne: true } };
 
+  if (req.user && req.user.role === 'team') {
+    filter.department = req.user.department;
+  }
+
   const total = await Feedback.countDocuments(filter);
   const pending = await Feedback.countDocuments({ ...filter, status: 'pending' });
   const inReview = await Feedback.countDocuments({ ...filter, status: 'in-review' });
@@ -475,6 +480,10 @@ const addMessage = asyncHandler(async (req, res) => {
 
 const getFeedbackAnalytics = asyncHandler(async (req, res) => {
   const filter = { isDuplicate: { $ne: true } };
+
+  if (req.user && req.user.role === 'team') {
+    filter.department = req.user.department;
+  }
 
   // 1. Department-wise stats (Bar Chart)
   const departmentStats = await Feedback.aggregate([
